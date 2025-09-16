@@ -1,5 +1,6 @@
 # 제안서 All-in-One 플랫폼 개발 프로젝트
 AI 제안서 생성 및 제안 시뮬레이터
+https://web-msprojectjy-bwhsgeezaya4caag.swedencentral-01.azurewebsites.net/
 
 ## 1. 프로젝트 개요
 ### 1.1 프로젝트명
