@@ -1,0 +1,10 @@
+streamlit
+requests
+python-pptx
+python-docx
+matplotlib
+pandas
+openai
+python-dotenv
+Pillow
+numpy
