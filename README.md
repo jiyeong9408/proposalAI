@@ -28,7 +28,7 @@ AI 기술을 활용해 제안서 작성부터 발표 연습까지 원스톱으�
 ### Backend & AI:
 - Azure OpenAI (GPT-4o 모델)
 - Azure AI Search (RAG 구현)
-- 
+  
 ### 문서처리
 - Python-PPTX (PowerPoint 생성)
 - Python-DOCX (리포트 생성)
