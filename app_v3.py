@@ -10,7 +10,7 @@ from utils import (
     aoai_chat, search_topk,
     render_rag_section,
     get_judge_roles, default_specialties, make_default_profile,
-    judge_greet_and_first_impression, judge_next_question, judge_score_answer,
+    judge_greet_and_first_impression, judge_next_turn, judge_score_answer,
     build_brief_from_slides
 )
 
@@ -42,19 +42,34 @@ with tab1:
 
     col1, col2 = st.columns(2)
     with col1:
-        topic = st.text_input("주제", "", placeholder="예: AI 기반 펫케어 헬스체크 서비스")
-        summary = st.text_area("핵심내용", "", placeholder="예: 반려동물 사진으로 건강상태를 진단하는 AI 솔루션")
+        topic = st.text_input("주제", "AI 기반 펫케어 헬스체크 서비스", placeholder="예: AI 기반 펫케어 헬스체크 서비스")
+        summary = st.text_area("핵심내용", "반려동물 사진으로 건강상태를 진단하는 AI 솔루션", placeholder="예: 반려동물 사진으로 건강상태를 진단하는 AI 솔루션")
         audience = st.selectbox("대상", ["투자유치용", "정부사업용", "사내용"])
         tone = st.selectbox("톤", ["간결", "설득", "기술"])
         slide_count = st.slider("슬라이드 수", 10, 25, 15)
         use_rag = st.checkbox("RAG 참고문서 사용(Azure AI Search)")
 
     with col2:
-        deck_title = st.text_input("덱 타이틀", "AI 프로젝트 제안", placeholder="예: PetCare AI 제안서")
-        template_file = st.file_uploader("PPT 템플릿 업로드", type=["pptx"])
+        deck_title = st.text_input("PPT 제목", "PetCare AI 제안서", placeholder="예: PetCare AI 제안서")
+        template_file = st.file_uploader("PPT 템플릿 업로드", type=["pptx"], help="업로드한 템플릿의 레이아웃과 디자인을 적용합니다")
         font_name = st.text_input("폰트 이름", "맑은 고딕", placeholder="예: 맑은 고딕 / Arial")
 
+        # 템플릿 미리보기 정보
+        if template_file:
+            st.success(f"✅ 템플릿 업로드됨: {template_file.name}")
+            st.caption(f"파일 크기: {len(template_file.getvalue()) / 1024:.1f} KB")
+
+
     if st.button("🚀 개요 만들고 PPT 생성하기"):
+        # 입력 검증
+        if not topic.strip():
+            st.error("주제를 입력해주세요.")
+            st.stop()
+            
+        if not summary.strip():
+            st.error("핵심내용을 입력해주세요.")
+            st.stop()
+
         with st.spinner("개요 생성 중..."):
             # 1) RAG 참고 문서 가져오기(선택)
             ground = ""
@@ -62,6 +77,7 @@ with tab1:
                 try:
                     docs = search_topk(topic, 3)
                     ground = "\n\n".join([f"- {d['title']}: {d['content']}" for d in docs])[:3000]
+                    st.info(f"참고문서 {len(docs)}개를 찾았습니다.")
                 except Exception as e:
                     st.warning(f"RAG 참조 실패(무시 후 진행): {e}")
 
@@ -70,7 +86,7 @@ with tab1:
             usr = f"""
         다음 정보를 반영해 **마크다운 개요**를 만들어줘. 
         각 슬라이드는 '## 슬라이드 N: 제목' 형식으로, 아래에 불릿을 '-'로 3~5개 작성.
-        추가 설명말고 개요만.
+        추가 설명도 붙여줘.
 
         주제: {topic}
         핵심내용: {summary}
@@ -87,39 +103,74 @@ with tab1:
                     max_tokens=1200, temperature=0.6
                 )
                 slides = parse_outline_from_text(outline_md)
+
+                if not slides:
+                    st.error("개요 생성에 실패했습니다. 다시 시도해주세요.")
+                    st.stop()
+
                 st.session_state["outline"] = {"slides": slides, "target": audience}
                 st.session_state["last_outline_md"] = outline_md
 
+                st.success(f"✅ 개요 생성 완료! ({len(slides)}개 슬라이드)")
+            except Exception as e:
+                st.error(f"개요 생성 실패: {e}")
+                st.stop()
+        
+        with st.spinner("PPT 생성 중..."):
+            try:
                 # 3) PPT 생성 (템플릿 적용)
-                tmpl = template_file.read() if template_file else None
+                template_data = None
+                if template_file:
+                    # 파일 포인터가 끝에 있을 수 있으므로 처음으로 리셋
+                    template_file.seek(0)
+                    template_data = template_file.getvalue()
+                    st.info("템플릿을 적용하여 PPT를 생성합니다...")
+                else:
+                    st.info("기본 템플릿으로 PPT를 생성합니다...")
+
                 ppt_io = build_ppt_from_outline_mixed(
                     outline_slides=slides,
                     project_title=deck_title,
-                    template_bytes=tmpl,
+                    template_bytes=template_data,
                     font_name=font_name
                 )
-                st.session_state["ppt_bytes"] = ppt_io.getvalue()
-
-                st.success("✅ 개요 생성 + PPT 생성 완료! 아래에서 미리보기와 다운로드를 확인하세요.")
+                
+                if ppt_io:
+                    st.session_state["ppt_bytes"] = ppt_io.getvalue()
+                    st.success("✅ PPT 생성 완료!")
+                else:
+                    st.error("PPT 생성에 실패했습니다.")
+                    
             except Exception as e:
-                st.error(f"개요 생성 실패: {e}")
+                st.error(f"PPT 생성 실패: {e}")
+                # 디버깅용 상세 정보
+                st.expander("오류 세부사항").write(str(e))
 
         # ---------------- Preview & Download ----------------
         if st.session_state.get("outline"):
             st.markdown("### 📑 생성된 개요 미리보기")
-            for i, s in enumerate(st.session_state["outline"]["slides"], 1):
-                st.markdown(f"**{i}. {s['title']}**")
-                for b in s["bullets"]:
-                    st.markdown(f"- {b}")
+            with st.expander("개요 상세보기", expanded=False):
+                for i, s in enumerate(st.session_state["outline"]["slides"], 1):
+                    st.markdown(f"**{i}. {s['title']}**")
+                    for b in s["bullets"]:
+                        st.markdown(f"- {b}")
 
         if st.session_state.get("ppt_bytes"):
             st.markdown("### 📥 PPT 다운로드")
+            file_name = f"{deck_title.replace(' ', '_')}_outline.pptx"
             st.download_button(
-                "다운로드: proposal_outline.pptx",
+                "📄 다운로드: PPT 파일",
                 data=st.session_state["ppt_bytes"],
-                file_name="proposal_outline.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True
             )
+            st.success("위 버튼을 클릭하여 생성된 PPT를 다운로드하세요!")
+        
+            # 통계 정보
+            ppt_size = len(st.session_state["ppt_bytes"])
+            slide_count_actual = len(st.session_state["outline"]["slides"])
+            st.caption(f"생성된 PPT: {slide_count_actual}개 슬라이드, {ppt_size/1024:.1f} KB")
 
 # ----------------------------
 # 탭2: PPT 업로드 평가
@@ -281,6 +332,13 @@ with tab2:
                 st.session_state["sim_outline_brief"] = brief
                 st.session_state["criteria_list"] = criteria
 
+                # 구조 요약을 탭3에서 쓸 개요 텍스트로 저장
+                slides_outline = (rich or {}).get("structure", {}).get("slides_outline", [])
+                sim_outline_brief = "\n".join(
+                    [f"{s.get('idx','?')}. {s.get('title','')}" for s in slides_outline]
+                ) or "제안 개요 없음"
+                st.session_state["sim_outline_brief"] = sim_outline_brief
+
                 st.markdown("### 🎤 발표 시뮬레이션 안내")
                 st.info("👉 발표 시뮬레이션을 진행하려면 **3번 탭**으로 이동하세요!")
         else:
@@ -290,11 +348,8 @@ with tab2:
 # 탭3: 발표 시뮬레이션
 # ----------------------------
 
-def render_tab3_judges(outline_brief_getter, criteria_getter):
-    """
-    outline_brief_getter(): 현재 제안서 개요 텍스트(요약) 반환하는 콜백 (없으면 "")
-    criteria_getter(): [{"name","weight","rubric"}, ...] 반환하는 콜백 (탭2의 평가기준 재사용)
-    """
+def render_tab3_judges(get_outline=None, get_criteria=None):
+    # 세션 키 보장
     if "judges" not in st.session_state:
         st.session_state["judges"] = []   # [{profile, chats:[{role,content}], scores:[...], progress:int}]
     if "active_judge_idx" not in st.session_state:
@@ -302,80 +357,147 @@ def render_tab3_judges(outline_brief_getter, criteria_getter):
 
     st.title("🧑‍⚖️ AI 심사위원 커스터마이징 & 시뮬레이션")
 
-    # ========== 오른쪽: 탭/대화 영역 ==========
-    st.markdown("#### 💬 실시간 시뮬레이션")
-    # 🔒 분석 결과 없는 경우
-    if "sim_outline_brief" not in st.session_state or not st.session_state["sim_outline_brief"]:
-        st.warning("⚠️ 발표 시뮬레이션을 시작하려면 먼저 **2번 탭에서 PPT 분석**을 완료하세요.")
-    else:
-        # 🔹 분석 결과가 있을 때만 실행
-        sim_outline_brief = st.session_state.get("sim_outline_brief", {})
-        criteria = st.session_state.get("criteria_list", [])
+    # ===== 발표 개요/기준 준비 =====
+    # outline_text: getter → 세션 → 기본값
+    outline_text = ""
+    if get_outline:
+        try:
+            outline_obj = get_outline()
+            if isinstance(outline_obj, str):
+                outline_text = outline_obj.strip()
+            elif isinstance(outline_obj, dict) and "slides" in outline_obj:
+                outline_text = "\n".join(
+                    [f"{i+1}. {s.get('title','')}" for i, s in enumerate(outline_obj["slides"])]
+                )
+        except Exception:
+            pass
+    if not outline_text:
+        outline_text = (
+            st.session_state.get("sim_outline_brief")
+            or st.session_state.get("last_outline_md")
+            or ""
+        )
 
+    # criteria_list: getter → 세션 → 빈 리스트
+    criteria_list = []
+    if get_criteria:
+        try:
+            criteria_list = get_criteria() or []
+        except Exception:
+            criteria_list = []
+    if not criteria_list:
+        criteria_list = st.session_state.get("criteria_list", [])
+
+    # ===== 우측 대화 영역 헤더 =====
+    st.markdown("#### 💬 실시간 시뮬레이션")
+    if not outline_text:
+        st.warning("⚠️ 발표 시뮬레이션을 시작하려면 먼저 **2번 탭에서 PPT 분석**을 완료하세요.")
+        return
+    else:
         st.success("✅ PPT 분석이 완료되었습니다. 발표 시뮬레이션을 시작할 수 있습니다.")
-        
+
+    # 심사위원 존재 확인
     if not st.session_state["judges"]:
-        st.info("우측에서 심사위원을 최소 1명 추가하세요.")
+        st.info("우측(사이드바)에서 심사위원을 최소 1명 추가하세요.")
         return
 
+    # 활성 심사위원 선택
     idx = st.session_state["active_judge_idx"]
+    idx = max(0, min(idx, len(st.session_state["judges"]) - 1))
+    st.session_state["active_judge_idx"] = idx
+
     judge = st.session_state["judges"][idx]
-    prof = judge["profile"]
+    prof  = judge["profile"]
+    judge.setdefault("chats", [])
+    judge.setdefault("scores", [])
+    judge.setdefault("progress", 0)
 
     # 상단 카드: 프로필 요약 + 진행률
     colA, colB, colC = st.columns([2,1,1])
     with colA:
-        st.markdown(f"**{prof.get('name') or prof.get('role')}** · {prof.get('role')}  ")
-        st.caption(f"스타일: {prof.get('style_carefulness')} / {prof.get('style_question')} / {prof.get('style_focus')} / {prof.get('style_tone')}")
+        st.markdown(f"**{prof.get('name') or prof.get('role','심사위원')}** · {prof.get('role','심사위원')}")
+        st.caption(
+            f"스타일: {prof.get('style_carefulness','보통')} / "
+            f"{prof.get('style_question','직설적')} / "
+            f"{prof.get('style_focus','큰그림')} / "
+            f"{prof.get('style_tone','공손')}"
+        )
         if prof.get("specialties"):
             st.caption("전문분야: " + ", ".join(prof["specialties"]))
     with colB:
-        st.metric("진행 질문 수", judge.get("progress",0))
+        st.metric("진행 질문 수", judge.get("progress", 0))
     with colC:
         last_score = judge["scores"][-1]["weighted_total"] if judge["scores"] else "-"
         st.metric("최근 가중 총점", last_score)
 
-    st.markdown("---")
+    st.divider()
 
-    # 채팅 내역 표시
-    for msg in judge["chats"]:
-        if msg["role"] == "assistant":
-            st.chat_message("assistant").markdown(msg["content"])
-        else:
-            st.chat_message("user").markdown(msg["content"])
-
-    # 초기 인사/첫인상
+    # === 시작 버튼 ===
     if not judge["chats"]:
         if st.button("👋 인사 및 첫인상 받기"):
-            outline = outline_brief_getter() or "(개요 없음)"
-            greet = judge_greet_and_first_impression(prof, outline)
-            judge["chats"].append({"role":"assistant","content":greet})
-            st.rerun()
+            greet = judge_greet_and_first_impression(prof, outline_text or "제안 개요 없음")
+            judge["chats"].append({"role":"assistant", "content": greet})
+            st.session_state["judges"][idx] = judge
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
 
-    # 사용자 입력
-    user_in = st.chat_input("심사위원에게 답변 입력...")
-    if user_in:
-        judge["chats"].append({"role":"user","content":user_in})
+    # === 대화 로그 표시 ===
+    for msg in judge["chats"]:
+        st.chat_message("assistant" if msg["role"]=="assistant" else "user").markdown(msg["content"])
 
-        # 점수 계산
-        crits = criteria_getter() or []
-        eval_js = judge_score_answer(prof, crits, user_in)
-        judge["scores"].append(eval_js)
+    # === 채팅 입력 → 즉시 평가 → 다음 질문 ===
+    if judge["chats"]:  # 시작 이후에만 입력 가능
+        user_text = st.chat_input("심사위원에게 답변을 입력하세요...")
+        if user_text:
+            # 1) 사용자 답 저장
+            judge["chats"].append({"role":"user","content":user_text})
 
-        # 다음 질문 생성
-        window = judge["chats"][-6:]  # 최근 6턴 정도만 전달
-        follow = judge_next_question(prof, window, user_in, 
-                                     "\n".join([f"- {c['name']}({c['weight']}%): {c['rubric']}" for c in crits]) )
-        judge["chats"].append({"role":"assistant","content":follow})
-        judge["progress"] = judge.get("progress",0) + 1
-        st.rerun()
+            # 2) 즉시 평가(JSON)
+            try:
+                eval_res = judge_score_answer(prof, outline_text or "제안 개요 없음", criteria_list, judge["chats"], user_text)
+            except Exception as e:
+                eval_res = {"scores": {}, "weighted_total": 0, "comments": [f"평가 실패: {e}"]}
+            judge["scores"].append(eval_res)
 
-    # 하단: 평가 요약
-    with st.expander("📊 심사위원별 평가 로그"):
-        if judge["scores"]:
-            st.write(judge["scores"][-1])
-        else:
-            st.caption("아직 평가 없음")
+            # 3) 다음 질문 생성(자연어)
+            nxt = judge_next_turn(prof, outline_text or "제안 개요 없음", judge["chats"])
+            judge["chats"].append({"role":"assistant","content":nxt})
+
+            # 진행 질문 수 +1
+            judge["progress"] = judge.get("progress", 0) + 1
+
+            # 저장 & 리렌더
+            st.session_state["judges"][idx] = judge
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
+
+    # === 이번 턴 미니 평가 요약 ===
+    st.divider()
+    st.markdown("#### 📝 이번 턴 평가(요약)")
+    last_eval = (judge.get("scores") or [])[-1] if (judge.get("scores")) else None
+    if last_eval:
+        c1, c2, c3 = st.columns([1,2,2])
+        with c1:
+            st.metric("가중 총점", last_eval.get("weighted_total", 0))
+        with c2:
+            sdict = last_eval.get("scores", {})
+            top2 = sorted(sdict.items(), key=lambda x: x[1], reverse=True)[:2]
+            if top2:
+                st.caption("상위 기준")
+                for k, v in top2:
+                    st.write(f"- {k}: {v}")
+        with c3:
+            cmts = last_eval.get("comments", [])[:2]
+            if cmts:
+                st.caption("코멘트")
+                for c in cmts:
+                    st.write(f"- {c}")
+    else:
+        st.caption("아직 평가 데이터가 없습니다. 답변을 입력하면 자동 평가됩니다.")
 
 def render_judges_panel(criteria_getter):
     roles = get_judge_roles()
@@ -457,5 +579,3 @@ with tab3:
 
     with col_main:
         render_tab3_judges(get_outline, get_criteria)  # 기존 대화/평가 본문
-
-
