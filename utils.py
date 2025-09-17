@@ -348,65 +348,240 @@ def parse_outline_from_text(text: str):
 
     return slides
 
+def _apply_font_safe(shape_or_paragraph, font_name, size):
+    """안전한 폰트 적용"""
+    try:
+        if hasattr(shape_or_paragraph, 'text_frame'):
+            # Shape인 경우
+            for paragraph in shape_or_paragraph.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = font_name
+                    run.font.size = Pt(size)
+        elif hasattr(shape_or_paragraph, 'runs'):
+            # Paragraph인 경우
+            for run in shape_or_paragraph.runs:
+                run.font.name = font_name
+                run.font.size = Pt(size)
+        elif hasattr(shape_or_paragraph, 'font'):
+            # Run인 경우
+            shape_or_paragraph.font.name = font_name
+            shape_or_paragraph.font.size = Pt(size)
+    except Exception as e:
+        print(f"폰트 적용 오류: {e}")
+
+def _add_title_only_slide_safe(prs, title_text, layout_info, font="Malgun Gothic"):
+    """안전한 타이틀 전용 슬라이드 추가"""
+    try:
+        layout_idx = layout_info.get('section') or layout_info.get('title_only') or layout_info['title']
+        layout = prs.slide_layouts[layout_idx]
+        slide = prs.slides.add_slide(layout)
+        print(f"섹션 슬라이드 생성: 레이아웃 {layout_idx} 사용")
+        
+        # 타이틀 placeholder 찾기
+        for shape in slide.shapes:
+            if shape.is_placeholder:
+                ph_type = shape.placeholder_format.type
+                if ph_type in [1, 3]:  # TITLE, CENTER_TITLE
+                    shape.text = title_text
+                    _apply_font_to_shape(shape, font, 36)
+                    break
+        else:
+            # placeholder가 없다면 첫 번째 텍스트 shape 사용
+            for shape in slide.shapes:
+                if hasattr(shape, 'text_frame'):
+                    shape.text = title_text
+                    _apply_font_to_shape(shape, font, 36)
+                    break
+        
+        return slide
+    except Exception as e:
+        print(f"섹션 슬라이드 생성 오류: {e}")
+        return None
+
+def _apply_font_to_shape(shape, font_name, size):
+    """Shape의 모든 텍스트에 폰트 적용"""
+    try:
+        if hasattr(shape, 'text_frame'):
+            for paragraph in shape.text_frame.paragraphs:
+                _apply_font_to_paragraph(paragraph, font_name, size)
+    except Exception as e:
+        print(f"Shape 폰트 적용 오류: {e}")
+
+def _apply_font_to_paragraph(paragraph, font_name, size):
+    """Paragraph의 모든 run에 폰트 적용"""
+    try:
+        # 기존 run이 없으면 생성
+        if not paragraph.runs:
+            paragraph._p.get_or_add_r()
+        
+        for run in paragraph.runs:
+            if hasattr(run, 'font'):
+                run.font.name = font_name
+                run.font.size = Pt(size)
+    except Exception as e:
+        print(f"Paragraph 폰트 적용 오류: {e}")
+    
+def _add_content_slide_safe(prs, title, bullets, layout_info, font="Malgun Gothic"):
+    """템플릿의 콘텐츠 레이아웃으로 콘텐츠 슬라이드 생성"""
+    try:
+        layout = prs.slide_layouts[layout_info['content']]
+        slide = prs.slides.add_slide(layout)
+        print(f"콘텐츠 슬라이드 생성: 레이아웃 {layout_info['content']} 사용")
+        
+        # placeholder 분류
+        title_placeholder = None
+        content_placeholder = None
+        
+        for shape in slide.shapes:
+            if shape.is_placeholder:
+                ph_type = shape.placeholder_format.type
+                if ph_type in [1, 3]:  # TITLE, CENTER_TITLE
+                    title_placeholder = shape
+                elif ph_type in [2, 7, 8, 13]:  # BODY, FOOTER, HEADER, CONTENT
+                    if content_placeholder is None:  # 첫 번째 콘텐츠 placeholder 사용
+                        content_placeholder = shape
+        
+        # 타이틀 설정
+        if title_placeholder:
+            title_placeholder.text = title
+            _apply_font_to_shape(title_placeholder, font, 32)
+        
+        # 콘텐츠 설정
+        if content_placeholder and hasattr(content_placeholder, 'text_frame'):
+            tf = content_placeholder.text_frame
+            tf.clear()
+            
+            if bullets:
+                # 첫 번째 불릿
+                if tf.paragraphs:
+                    p = tf.paragraphs[0]
+                else:
+                    p = tf.add_paragraph()
+                p.text = str(bullets[0])
+                p.level = 0
+                _apply_font_to_paragraph(p, font, 18)
+                
+                # 나머지 불릿들
+                for bullet in bullets[1:]:
+                    p = tf.add_paragraph()
+                    p.text = str(bullet)
+                    p.level = 0
+                    _apply_font_to_paragraph(p, font, 18)
+        
+        return slide
+    except Exception as e:
+        print(f"콘텐츠 슬라이드 생성 오류: {e}")
+        return None
+
+def _analyze_layouts(prs):
+    """템플릿의 레이아웃을 분석하여 최적의 레이아웃을 찾음"""
+    layouts = {
+        'title': None,
+        'title_only': None,
+        'content': None,
+        'section': None
+    }
+    
+    for i, layout in enumerate(prs.slide_layouts):
+        name_lower = layout.name.lower()
+        print(f"레이아웃 {i}: {layout.name}")
+        
+        # 타이틀 슬라이드 찾기
+        if any(keyword in name_lower for keyword in ['title slide', '제목 슬라이드', 'title']):
+            if 'only' not in name_lower and layouts['title'] is None:
+                layouts['title'] = i
+        
+        # 타이틀 온리 찾기
+        if any(keyword in name_lower for keyword in ['title only', '제목만', 'section']):
+            layouts['title_only'] = i
+        
+        # 콘텐츠 슬라이드 찾기
+        if any(keyword in name_lower for keyword in ['content', 'bullet', '내용', 'two content']):
+            layouts['content'] = i
+        
+        # 섹션 헤더 찾기
+        if any(keyword in name_lower for keyword in ['section', '섹션', 'divider']):
+            layouts['section'] = i
+    
+    # 기본값 설정
+    if layouts['title'] is None:
+        layouts['title'] = 0  # 첫 번째 레이아웃
+    if layouts['content'] is None:
+        layouts['content'] = min(1, len(prs.slide_layouts) - 1)  # 두 번째 레이아웃
+    if layouts['title_only'] is None:
+        layouts['title_only'] = layouts['title']  # 타이틀과 동일
+    if layouts['section'] is None:
+        layouts['section'] = layouts['title_only']  # 타이틀 온리와 동일
+    
+    return layouts
+    
 def build_ppt_from_outline_mixed(
     outline_slides, project_title=None, template_bytes=None, font_name="Malgun Gothic"
 ) -> BytesIO:
     """
+    템플릿의 디자인과 배경을 완전히 유지하면서 콘텐츠만 변경하는 PPT 생성
     - 첫 장: 타이틀
     - 섹션: bullets 없음 or '섹션:' 등으로 시작
     - 나머지: 제목+불릿
     """
-    prs = Presentation(BytesIO(template_bytes)) if template_bytes else Presentation()
+    try:
+        # 템플릿 처리 개선
+        if template_bytes:
+            if hasattr(template_bytes, 'read'):
+                # file_uploader 객체인 경우
+                template_data = template_bytes.read()
+                template_bytes.seek(0)  # 포인터 리셋
+            else:
+                # 이미 bytes인 경우
+                template_data = template_bytes
+            
+            prs = Presentation(BytesIO(template_data))
+
+            # 기존 슬라이드가 있다면 모두 삭제 (템플릿 구조는 유지)
+            slide_ids = [slide.slide_id for slide in prs.slides]
+            for slide_id in slide_ids:
+                for i, slide in enumerate(prs.slides):
+                    if slide.slide_id == slide_id:
+                        xml_slides = prs.slides._sldIdLst
+                        xml_slides.remove(xml_slides[i])
+                        break
+
+        else:
+            prs = Presentation()
+            print("기본 템플릿 사용")
+    except Exception as e:
+        print(f"템플릿 로드 실패, 기본 템플릿 사용: {e}")
+        prs = Presentation()
+
+    # 사용 가능한 레이아웃 분석
+    layout_info = _analyze_layouts(prs)
+    print(f"레이아웃 분석 결과: {layout_info}")
 
     # 1) 타이틀 슬라이드
     title_text = project_title or "Project Pitch"
-    _add_title_only_slide(prs, title_text, font=font_name)
+    _add_title_only_slide(prs, title_text, layout_info, font=font_name)
 
-    # 2) 본문
+    # 2) 본문 슬라이드들
     for item in outline_slides:
-        title = item.get("title") or ""
+        if not isinstance(item, dict):
+            continue
+            
+        title = item.get("title") or "제목 없음"
         bullets = item.get("bullets") or []
+        
         if _is_section_slide(item):
-            _add_title_only_slide(prs, title_text=title, font=font_name)
+            _add_title_only_slide_safe(prs, title, layout_info, font=font_name)
         else:
-            _add_title_content_slide(prs, title=title, bullets=bullets, font=font_name)
+            _add_content_slide_safe(prs, title, bullets, layout_info, font=font_name)
 
     bio = BytesIO()
     prs.save(bio)
     bio.seek(0)
     return bio
 
-def _add_title_content_slide(prs, title, bullets, font="Malgun Gothic"):
-    tac = None
-    for layout in prs.slide_layouts:
-        if "title and content" in layout.name.lower() or layout.name == "Title and Content":
-            tac = layout
-            break
-    layout = tac or prs.slide_layouts[0]
-    slide = prs.slides.add_slide(layout)
-    title_shape, body_shape = _find_title_body_placeholders(slide)
-    _set_text(title_shape, title, font=font, size=32)
-
-    if body_shape and getattr(body_shape, "has_text_frame", False):
-        tf = body_shape.text_frame
-        tf.clear()
-        if bullets:
-            p0 = tf.paragraphs[0]
-            p0.text = bullets[0]
-            p0.level = 0
-            p0.font.name = font
-            p0.font.size = Pt(18)
-            for b in bullets[1:]:
-                p = tf.add_paragraph()
-                p.text = b
-                p.level = 0
-                p.font.name = font
-                p.font.size = Pt(18)
-        else:
-            tf.paragraphs[0].text = ""
-    return slide
 
 def _is_section_slide(item) -> bool:
+    """섹션 슬라이드 판별 함수"""
     title = (item.get("title") or "").strip()
     bullets = item.get("bullets") or []
     if not bullets:
@@ -418,19 +593,38 @@ def _is_section_slide(item) -> bool:
         or lowered.startswith("section:")
         or lowered.startswith("section ")
         or lowered.startswith("section-")
+        or "목차" in lowered
+        or "overview" in lowered
     )
 
-def _add_title_only_slide(prs, title_text, font="Malgun Gothic"):
-    title_only = None
-    for layout in prs.slide_layouts:
-        if "title only" in layout.name.lower() or layout.name == "Title Only":
-            title_only = layout
-            break
-    layout = title_only or prs.slide_layouts[0]
-    slide = prs.slides.add_slide(layout)
-    title_shape, _ = _find_title_body_placeholders(slide)
-    _set_text(title_shape, title_text, font=font, size=40, align=PP_PARAGRAPH_ALIGNMENT.LEFT)
-    return slide
+def _add_title_only_slide(prs, title_text, layout_info, font="Malgun Gothic"):
+    """템플릿의 타이틀 슬라이드 레이아웃으로 타이틀 슬라이드 생성"""
+    try:
+        layout_idx = layout_info.get('section') or layout_info.get('title_only') or layout_info['title']
+        layout = prs.slide_layouts[layout_idx]
+        slide = prs.slides.add_slide(layout)
+        print(f"섹션 슬라이드 생성: 레이아웃 {layout_idx} 사용")
+        
+        # 타이틀 placeholder 찾기
+        for shape in slide.shapes:
+            if shape.is_placeholder:
+                ph_type = shape.placeholder_format.type
+                if ph_type in [1, 3]:  # TITLE, CENTER_TITLE
+                    shape.text = title_text
+                    _apply_font_to_shape(shape, font, 36)
+                    break
+        else:
+            # placeholder가 없다면 첫 번째 텍스트 shape 사용
+            for shape in slide.shapes:
+                if hasattr(shape, 'text_frame'):
+                    shape.text = title_text
+                    _apply_font_to_shape(shape, font, 36)
+                    break
+        
+        return slide
+    except Exception as e:
+        print(f"섹션 슬라이드 생성 오류: {e}")
+        return None
 
 # ---------------------------
 # PPT 생성 (타이틀/섹션/콘텐츠 혼합)
@@ -1389,7 +1583,7 @@ def judge_greet_and_first_impression(profile: dict, outline_text: str) -> str:
     )
 
 
-def judge_next_question(profile: dict, outline_text: str, history: list[dict]) -> str:
+def judge_next_turn(profile: dict, outline_text: str, history: list[dict]) -> str:
     """
     사용자의 직전 답변을 포함한 대화 내역(history)을 보고
     '한 개'의 다음 질문만 이어서 묻는다. 필요하면 짧은 피드백 한 줄 + 질문 1개.
@@ -1478,3 +1672,74 @@ def aoai_chat_text(messages, max_tokens=400, temperature=0.4):
     평문(자연스러운 채팅)으로 답을 받는다. JSON 강제 금지.
     """
     return call_openai(messages, max_tokens=max_tokens, temperature=temperature, force_json=False)
+
+# === utils.py에 추가 ===
+def judge_score_answer(profile: dict, outline_text: str, criteria: list, history: list[dict], user_answer: str):
+    """
+    마지막 사용자 답변을 기준으로 LLM이 기준별 점수(0~100)와 코멘트를 JSON으로 반환.
+    criteria: [{"name": "...", "weight": 30, "rubric": "..."}]
+    history: [{"role":"assistant"|"user","content":...}, ...]  # 최근 몇 턴만 보내 안정화
+    """
+    import json
+
+    crit_lines = []
+    for c in (criteria or []):
+        nm = (c.get("name") or "").strip()
+        wt = int(c.get("weight", 0))
+        rb = (c.get("rubric") or "").strip()
+        crit_lines.append(f"- {nm}({wt}%): {rb}")
+    crit_text = "\n".join(crit_lines) if crit_lines else "- 전반 평가(100%): 논리·명확성"
+
+    tail = history[-8:] if len(history) > 8 else (history or [])
+    chat_dump = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in tail])
+
+    sys = (
+        "You are a rigorous Korean pitch judge. "
+        "Return JSON only. Do not include any extra text or code fences. "
+        "The word JSON is explicitly present here to satisfy response_format rules."
+    )
+    usr = f"""
+아래 발표 개요와 대화 흐름, 그리고 사용자의 '직전 답변'을 기준으로 평가하세요.
+반드시 'JSON 객체'만 출력합니다. (설명 금지)
+
+[평가기준과 가중치]
+{crit_text}
+
+[발표 개요(요약)]
+{outline_text}
+
+[최근 대화]
+{chat_dump}
+
+[직전 사용자 답변]
+{user_answer}
+
+출력 스키마(JSON):
+{{
+  "scores": {{"기준명": 0}},        // 각 기준 0~100
+  "weighted_total": 0,              // 가중치 적용 총점(정수)
+  "comments": ["...","..."]         // 짧은 개선 코멘트 2~5개
+}}
+"""
+    raw = call_openai(
+        [{"role": "system", "content": sys}, {"role": "user", "content": usr}],
+        max_tokens=350, temperature=0.2, force_json=True
+    )
+    data = _parse_json_safely(raw)
+
+    # weighted_total 보정 (없거나 잘못되면 재계산)
+    try:
+        weight_sum = sum(int(c.get("weight", 0)) for c in (criteria or [])) or 1
+        wt_total = 0
+        for c in (criteria or []):
+            nm = (c.get("name") or "").strip()
+            w = int(c.get("weight", 0))
+            s = int((data.get("scores") or {}).get(nm, 0))
+            wt_total += s * w
+        data["weighted_total"] = int(round(wt_total / weight_sum))
+    except Exception:
+        data.setdefault("weighted_total", 0)
+
+    data.setdefault("scores", {})
+    data.setdefault("comments", [])
+    return data
